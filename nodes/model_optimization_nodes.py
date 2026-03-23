@@ -24,26 +24,18 @@ except ImportError:
 sageattn_modes = ["disabled", "auto", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
 
 
-def _tensor_has_storage(t):
-    try:
-        t.untyped_storage()
-        return True
-    except RuntimeError:
-        return False
-
-
 def _materialize_for_sage(t):
-    # Sage fused kernels need a normal storage-backed dense tensor.
-    # Last-dim contiguity alone is not sufficient for wrapper/storage-less tensors.
-    if _tensor_has_storage(t) and t.stride(-1) == 1:
-        return t
+    # Force a plain dense base tensor with normal storage.
+    # Conditional checks like untyped_storage()/stride are not strong enough
+    # for fused CUDA kernels that require a raw data pointer.
+    src = t.detach()
     out = torch.empty(
-        t.shape,
-        device=t.device,
-        dtype=t.dtype,
+        src.shape,
+        device=src.device,
+        dtype=src.dtype,
         memory_format=torch.contiguous_format,
     )
-    out.copy_(t)
+    out.copy_(src)
     return out
 
 
