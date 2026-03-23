@@ -24,6 +24,29 @@ except ImportError:
 sageattn_modes = ["disabled", "auto", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
 
 
+def _tensor_has_storage(t):
+    try:
+        t.untyped_storage()
+        return True
+    except RuntimeError:
+        return False
+
+
+def _materialize_for_sage(t):
+    # Sage fused kernels need a normal storage-backed dense tensor.
+    # Last-dim contiguity alone is not sufficient for wrapper/storage-less tensors.
+    if _tensor_has_storage(t) and t.stride(-1) == 1:
+        return t
+    out = torch.empty(
+        t.shape,
+        device=t.device,
+        dtype=t.dtype,
+        memory_format=torch.contiguous_format,
+    )
+    out.copy_(t)
+    return out
+
+
 def _compiler_disable(fn, reason):
     try:
         return torch.compiler.disable(recursive=True, reason=reason)(fn)
@@ -91,6 +114,9 @@ def get_sage_func(sage_attention, allow_compile=False):
             # add a heads dimension if there isn't already one
             if mask.ndim == 3:
                 mask = mask.unsqueeze(1)
+        q = _materialize_for_sage(q)
+        k = _materialize_for_sage(k)
+        v = _materialize_for_sage(v)
         out = sage_func(q, k, v, attn_mask=mask, is_causal=False, tensor_layout=tensor_layout).to(in_dtype)
         if tensor_layout == "HND":
             if not skip_output_reshape:
