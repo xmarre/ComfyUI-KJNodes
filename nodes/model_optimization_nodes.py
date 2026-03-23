@@ -23,31 +23,6 @@ except ImportError:
 
 sageattn_modes = ["disabled", "auto", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
 
-def _has_storage(t):
-    try:
-        t.untyped_storage()
-        return True
-    except RuntimeError:
-        return False
-
-
-def _call_sage_with_fallback(original_attention, sage_attention, sage_state, q, k, v, *args, **kwargs):
-    if sage_state.get("disabled", False):
-        return original_attention(q, k, v, *args, **kwargs)
-
-    if not (_has_storage(q) and _has_storage(k) and _has_storage(v)):
-        sage_state["disabled"] = True
-        return original_attention(q, k, v, *args, **kwargs)
-
-    try:
-        return sage_attention(q, k, v, *args, **kwargs)
-    except RuntimeError as e:
-        if "doesn't have storage" in str(e):
-            sage_state["disabled"] = True
-            return original_attention(q, k, v, *args, **kwargs)
-        raise
-
-
 def get_sage_func(sage_attention, allow_compile=False):
     logging.info(f"Using sage attention mode: {sage_attention}")
     from sageattention import sageattn
@@ -78,7 +53,10 @@ def get_sage_func(sage_attention, allow_compile=False):
             return out.transpose(1, 2) if tensor_layout == "NHD" else out
 
     if not allow_compile:
-        sage_func = torch.compiler.disable()(sage_func)
+        sage_func = torch.compiler.disable(
+            recursive=True,
+            reason="SageAttention fused kernels require eager storage-backed tensors",
+        )(sage_func)
 
     @wrap_attn
     def attention_sage(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
@@ -117,6 +95,11 @@ def get_sage_func(sage_attention, allow_compile=False):
             else:
                 out = out.reshape(b, -1, heads * dim_head)
         return out
+    if not allow_compile:
+        attention_sage = torch.compiler.disable(
+            recursive=True,
+            reason="Break Dynamo before SageAttention wrapper",
+        )(attention_sage)
     return attention_sage
 
 
@@ -146,9 +129,8 @@ class PathchSageAttentionKJ():
         model_clone = model.clone()
 
         new_attention = get_sage_func(sage_attention, allow_compile=allow_compile)
-        sage_state = {"disabled": False}
-        def attention_override_sage(func, q, k, v, *args, **kwargs):
-            return _call_sage_with_fallback(func, new_attention.__wrapped__, sage_state, q, k, v, *args, **kwargs)
+        def attention_override_sage(func, *args, **kwargs):
+            return new_attention(*args, **kwargs)
 
         # attention override
         model_clone.model_options["transformer_options"]["optimized_attention_override"] = attention_override_sage
@@ -223,9 +205,8 @@ class CheckpointLoaderKJ():
 
         if sage_attention != "disabled":
             new_attention = get_sage_func(sage_attention)
-            sage_state = {"disabled": False}
-            def attention_override_sage(func, q, k, v, *args, **kwargs):
-                return _call_sage_with_fallback(func, new_attention.__wrapped__, sage_state, q, k, v, *args, **kwargs)
+            def attention_override_sage(func, *args, **kwargs):
+                return new_attention(*args, **kwargs)
 
             # attention override
             model.model_options["transformer_options"]["optimized_attention_override"] = attention_override_sage
@@ -329,9 +310,8 @@ class DiffusionModelLoaderKJ():
 
         if sage_attention != "disabled":
             new_attention = get_sage_func(sage_attention)
-            sage_state = {"disabled": False}
-            def attention_override_sage(func, q, k, v, *args, **kwargs):
-                return _call_sage_with_fallback(func, new_attention.__wrapped__, sage_state, q, k, v, *args, **kwargs)
+            def attention_override_sage(func, *args, **kwargs):
+                return new_attention(*args, **kwargs)
 
             # attention override
             model.model_options["transformer_options"]["optimized_attention_override"] = attention_override_sage
@@ -1621,10 +1601,9 @@ class GGUFLoaderKJ(io.ComfyNode):
     def attention_override_pytorch(func, *args, **kwargs):
         new_attention = comfy.ldm.modules.attention.attention_pytorch
         return new_attention.__wrapped__(*args, **kwargs)
-    _sage_state = {"disabled": False}
-    def attention_override_sage(func, q, k, v, *args, **kwargs):
+    def attention_override_sage(func, *args, **kwargs):
         new_attention = comfy.ldm.modules.attention.attention_sage
-        return _call_sage_with_fallback(func, new_attention.__wrapped__, GGUFLoaderKJ._sage_state, q, k, v, *args, **kwargs)
+        return new_attention(*args, **kwargs)
     def attention_override_xformers(func, *args, **kwargs):
         new_attention = comfy.ldm.modules.attention.attention_xformers
         return new_attention.__wrapped__(*args, **kwargs)
