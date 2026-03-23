@@ -23,6 +23,14 @@ except ImportError:
 
 sageattn_modes = ["disabled", "auto", "sageattn_qk_int8_pv_fp16_cuda", "sageattn_qk_int8_pv_fp16_triton", "sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++", "sageattn3", "sageattn3_per_block_mean"]
 
+
+def _compiler_disable(fn, reason):
+    try:
+        return torch.compiler.disable(recursive=True, reason=reason)(fn)
+    except TypeError:
+        return torch.compiler.disable(recursive=True)(fn)
+
+
 def get_sage_func(sage_attention, allow_compile=False):
     logging.info(f"Using sage attention mode: {sage_attention}")
     from sageattention import sageattn
@@ -53,10 +61,10 @@ def get_sage_func(sage_attention, allow_compile=False):
             return out.transpose(1, 2) if tensor_layout == "NHD" else out
 
     if not allow_compile:
-        sage_func = torch.compiler.disable(
-            recursive=True,
-            reason="SageAttention fused kernels require eager storage-backed tensors",
-        )(sage_func)
+        sage_func = _compiler_disable(
+            sage_func,
+            "SageAttention fused kernels require eager storage-backed tensors",
+        )
 
     @wrap_attn
     def attention_sage(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
@@ -96,10 +104,10 @@ def get_sage_func(sage_attention, allow_compile=False):
                 out = out.reshape(b, -1, heads * dim_head)
         return out
     if not allow_compile:
-        attention_sage = torch.compiler.disable(
-            recursive=True,
-            reason="Break Dynamo before SageAttention wrapper",
-        )(attention_sage)
+        attention_sage = _compiler_disable(
+            attention_sage,
+            "Break Dynamo before SageAttention wrapper",
+        )
     return attention_sage
 
 
