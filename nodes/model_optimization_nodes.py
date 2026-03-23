@@ -31,19 +31,37 @@ def _has_storage(t):
         return False
 
 
-def _should_skip_sage(q, k, v):
-    return not (_has_storage(q) and _has_storage(k) and _has_storage(v))
+def _materialize_for_sage(t):
+    if _has_storage(t):
+        return t
+    return t.contiguous()
+
+
+def _prepare_sage_tensors(q, k, v):
+    return (
+        _materialize_for_sage(q),
+        _materialize_for_sage(k),
+        _materialize_for_sage(v),
+    )
 
 
 def _call_sage_with_fallback(original_attention, sage_attention, q, k, v, *args, **kwargs):
-    if _should_skip_sage(q, k, v):
-        return original_attention(q, k, v, *args, **kwargs)
+    q_sage, k_sage, v_sage = q, k, v
+
+    if not (_has_storage(q_sage) and _has_storage(k_sage) and _has_storage(v_sage)):
+        q_sage, k_sage, v_sage = _prepare_sage_tensors(q_sage, k_sage, v_sage)
 
     try:
-        return sage_attention(q, k, v, *args, **kwargs)
+        return sage_attention(q_sage, k_sage, v_sage, *args, **kwargs)
     except RuntimeError as e:
         if "doesn't have storage" in str(e):
-            return original_attention(q, k, v, *args, **kwargs)
+            q_sage, k_sage, v_sage = _prepare_sage_tensors(q, k, v)
+            try:
+                return sage_attention(q_sage, k_sage, v_sage, *args, **kwargs)
+            except RuntimeError as retry_e:
+                if "doesn't have storage" not in str(retry_e):
+                    raise
+                return original_attention(q, k, v, *args, **kwargs)
         raise
 
 
