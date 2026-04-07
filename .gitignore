@@ -5,6 +5,7 @@ __pycache__
 .vscode
 .vs/
 v17/
+.codex
 *.ckpt
 *.pth
 types
