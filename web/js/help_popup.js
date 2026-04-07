@@ -39,10 +39,10 @@ export const loadScript = (
 }
 
 loadScript('kjweb_async/marked.min.js').catch((e) => {
-  console.log(e)
+  console.error(e)
 })
 loadScript('kjweb_async/purify.min.js').catch((e) => {
-  console.log(e)
+  console.error(e)
 })
 
 const categories = ["KJNodes", "SUPIR", "VoiceCraft", "Marigold", "IC-Light", "WanVideoWrapper"];
@@ -157,7 +157,20 @@ function createDocPopup(description, signal, onClose, opts = {}) {
 
   contentWrapper.classList.add('content-wrapper')
   docElement.classList.add('kj-documentation-popup')
-  contentWrapper.innerHTML = DOMPurify.sanitize(marked.parse(description))
+  // Try ComfyUI's built-in markdown renderer first (available after frontend PR #10700)
+  if (app.extensionManager?.renderMarkdownToHtml) {
+    contentWrapper.innerHTML = app.extensionManager.renderMarkdownToHtml(description)
+  } else if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+    contentWrapper.innerHTML = DOMPurify.sanitize(marked.parse(description))
+  } else {
+    // Fallback: convert markdown links to <a> tags, auto-link bare URLs, preserve line breaks
+    const escaped = description
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+      .replace(/(^|[^"'])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank">$2</a>')
+      .replace(/\n/g, '<br>')
+    contentWrapper.innerHTML = escaped
+  }
 
   // resize handle
   const resizeHandle = document.createElement('div')

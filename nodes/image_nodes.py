@@ -17,9 +17,10 @@ from io import BytesIO
 
 try:
     import cv2
+    HAS_CV2 = True
 except:
     logging.warning("OpenCV not installed")
-    pass
+    HAS_CV2 = False
 
 from PIL import ImageGrab, ImageDraw, ImageFont, Image, ImageOps, ImageSequence, ImageStat
 from PIL.PngImagePlugin import PngInfo
@@ -37,9 +38,10 @@ import folder_paths
 from ..utility.utility import string_to_color
 
 try:
-    from server import PromptServer
+    from server import PromptServer, BinaryEventTypes
 except:
     PromptServer = None
+    BinaryEventTypes = None
 from concurrent.futures import ThreadPoolExecutor
 
 script_directory = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -715,7 +717,58 @@ Can be used for realtime diffusion with autoqueue.
                     time.sleep(delay)
         
         return (torch.stack(captures, 0),)
-    
+
+class ScreencapStream:
+
+    @classmethod
+    def IS_CHANGED(s, **kwargs):
+        return float("NaN")
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "capture"
+    CATEGORY = "KJNodes/image"
+    DESCRIPTION = """
+Captures a frame from a browser screen/window share stream.
+Click 'Start capture' to select a screen or window to share.
+Live preview is shown in the node. Works with auto-queue.
+
+Crop controls:
+- Drag on preview to draw a crop box
+- Drag inside the box to move it
+- Drag edges or corners to resize
+- Shift+drag to lock aspect ratio
+- Right-click or double-click to clear crop
+"""
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "frame_data": ("STRING", {"default": "", "multiline": False}),
+                "crop_width": ("INT", {"default": 1, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+                "crop_height": ("INT", {"default": 1, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+            },
+        }
+
+    MAX_FRAME_BYTES = 50 * 1024 * 1024  # 50MB base64 limit (PNG is larger than JPEG)
+
+    def capture(self, crop_width, crop_height, frame_data):
+        if not frame_data:
+            w = crop_width if crop_width > 0 else 512
+            h = crop_height if crop_height > 0 else 512
+            return (torch.zeros(1, h, w, 3),)
+        if len(frame_data) > self.MAX_FRAME_BYTES:
+            raise ValueError(f"Frame data exceeds {self.MAX_FRAME_BYTES // (1024*1024)}MB limit")
+        try:
+            img_bytes = base64.b64decode(frame_data.split(",", 1)[-1])
+        except Exception:
+            raise ValueError("Invalid frame data encoding")
+        img = Image.open(BytesIO(img_bytes)).convert("RGB")
+        img_np = np.array(img).astype(np.float32) / 255.0
+        img_tensor = torch.from_numpy(img_np).unsqueeze(0)
+        return (img_tensor,)
+
 class WebcamCaptureCV2:
 
     @classmethod
@@ -2768,6 +2821,14 @@ highest dimension.
     def resize(self, image, width, height, keep_proportion, upscale_method, divisible_by, pad_color, crop_position, unique_id, device="cpu", mask=None, per_batch=64):
         B, H, W, C = image.shape
 
+        # Treat ComfyUI's 64x64 placeholder mask as no mask
+        if mask is not None and mask.shape[-2:] == (64, 64) and (H != 64 or W != 64):
+            mask = None
+
+        # Scale mask to match image dimensions if they differ
+        if mask is not None and mask.shape[-2:] != (H, W):
+            mask = common_upscale(mask.unsqueeze(1), W, H, "bilinear", crop="disabled").squeeze(1)
+
         if device == "gpu":
             if upscale_method == "lanczos":
                 raise Exception("Lanczos is not supported on the GPU")
@@ -3553,8 +3614,6 @@ class SaveStringKJ:
             f.write(string)
 
         return results,
-    
-to_pil_image = T.ToPILImage()
 
 class FastPreview:
     @classmethod
@@ -3562,8 +3621,13 @@ class FastPreview:
         return {
             "required": {
                 "image": ("IMAGE", ),
-                "format": (["JPEG", "PNG", "WEBP"], {"default": "JPEG"}),
-                "quality" : ("INT", {"default": 75, "min": 1, "max": 100, "step": 1}),
+                "format": (["JPEG", "PNG"], {"default": "JPEG"}),
+                "max_size": ("INT", {"default": 768, "min": 128, "max": 4096, "step": 64,
+                             "tooltip": "Maximum width or height for the preview. Images larger than this are downscaled before encoding."}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "prompt_id": "PROMPT_ID",
             },
         }
 
@@ -3571,21 +3635,30 @@ class FastPreview:
     FUNCTION = "preview"
     CATEGORY = "KJNodes/experimental"
     OUTPUT_NODE = True
-    DESCRIPTION = "Experimental node for faster image previews by displaying through base64 it without saving to disk."
+    DESCRIPTION = "Fast image preview using binary websocket, bypassing base64/JSON overhead."
 
-    def preview(self, image, format, quality):        
-        pil_image = to_pil_image(image[0].permute(2, 0, 1))
+    def preview(self, image, format, max_size, unique_id=None, prompt_id=None):
+        arr = image[0].cpu().mul(255).clamp(0, 255).byte().numpy()
+        h, w = arr.shape[:2]
 
-        with BytesIO() as buffered:
-            pil_image.save(buffered, format=format, quality=quality)
-            img_bytes = buffered.getvalue()
+        if HAS_CV2 and (w > max_size or h > max_size):
+            scale = max_size / max(w, h)
+            arr = cv2.resize(arr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_LINEAR)
 
-        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-    
-        return {
-            "ui": {"bg_image": [img_base64]}, 
-            "result": ()
-        }
+        pil_image = Image.fromarray(arr)
+
+        if PromptServer is not None and unique_id is not None:
+            PromptServer.instance.send_sync(
+                BinaryEventTypes.PREVIEW_IMAGE_WITH_METADATA,
+                (
+                    (format, pil_image, None),
+                    {"node_id": unique_id, "prompt_id": prompt_id or ""},
+                ),
+                PromptServer.instance.client_id,
+            )
+
+        return {"ui": {"fast_preview": [True]}, "result": ()}
+
     
 class ImageCropByMaskAndResize:
     @classmethod
@@ -4711,8 +4784,7 @@ class PreviewImageOrMask(io.ComfyNode):
         return io.Schema(
             node_id="PreviewImageOrMask",
             display_name="Preview Image Or Mask",
-            category="image",
-            essentials_category="Basics",
+            category="KJNodes/misc",
             description="Previews the input images or masks.",
             search_aliases=["output"],
             inputs=[

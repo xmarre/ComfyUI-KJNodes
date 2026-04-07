@@ -11,3 +11,5 @@ types
 models
 jsconfig.json
 custom_dimensions.json
+.claude
+.tests
