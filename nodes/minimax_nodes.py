@@ -73,7 +73,6 @@ class MiniMaxChunkFeedForward(io.ComfyNode):
 
         m = model.clone()
         diffusion_model = m.get_model_object("diffusion_model")
-        reject_keyless_h3_qkv_patch(diffusion_model, "MiniMaxLowVRAMAttention")
 
         blocks = getattr(diffusion_model, "blocks", None)
         if not blocks or not hasattr(blocks[0], "mlp") or not hasattr(blocks[0].mlp, "fc1"):
@@ -179,6 +178,7 @@ class MiniMaxLowVRAMAttention(io.ComfyNode):
     def execute(cls, model, head_chunks) -> io.NodeOutput:
         m = model.clone()
         diffusion_model = m.get_model_object("diffusion_model")
+        reject_keyless_h3_qkv_patch(diffusion_model, "MiniMaxLowVRAMAttention")
 
         blocks = getattr(diffusion_model, "blocks", None)
         if not blocks or not hasattr(blocks[0], "attn") or not hasattr(blocks[0].attn, "qkv_proj"):
