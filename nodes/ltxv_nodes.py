@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import logging
 import comfy.model_management as mm
+from .minimax_keyless_compat import reject_keyless_h3_qkv_patch, require_qkv_attention
 import comfy.ldm.modules.attention as _comfy_attn
 from comfy.ldm.lightricks.model import apply_rotary_emb as _apply_rope
 try:
@@ -2077,6 +2078,7 @@ def wan_i2v_cross_sageattn_forward(self, x, context, context_img_len, transforme
 
 
 def minimax_sageattn_forward(self, x, rope_freqs=None, transformer_options={}):
+    require_qkv_attention(self, "MiniMaxH3MemoryEfficientSageAttentionPatch")
     # x: [S, hidden], unbatched packed sequence; q/k/v are NHD views into the fused qkv buffer.
     # A single-item list (MiniMaxLowVRAMAttention's block patch) hands over the sole reference
     # to the block's normed h so it can be freed right after the qkv GEMM.
@@ -2185,6 +2187,7 @@ class MiniMaxH3MemoryEfficientSageAttentionPatch(io.ComfyNode):
             raise RuntimeError("This ComfyUI version does not support MiniMax H3, cannot apply MiniMax H3 Memory Efficient Sage Attention Patch.")
         model_clone = model.clone()
         diffusion_model = model_clone.get_model_object("diffusion_model")
+        reject_keyless_h3_qkv_patch(diffusion_model, "MiniMaxH3MemoryEfficientSageAttentionPatch")
         if _MiniMaxH3Model is not None and not isinstance(diffusion_model, _MiniMaxH3Model):
             raise RuntimeError("MiniMax H3 Memory Efficient Sage Attention Patch can only be applied to a MiniMax H3 model.")
 
