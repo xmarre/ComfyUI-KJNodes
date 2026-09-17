@@ -9,6 +9,7 @@ import comfy.ops
 import comfy.quant_ops
 from comfy.ldm.modules.attention import optimized_attention
 from comfy.ldm.minimax.model import _mod_scale_shift, _mod_gate, PackedLayout
+from .minimax_keyless_compat import reject_keyless_h3_qkv_patch, require_qkv_attention
 
 from comfy_api.latest import io, ui
 
@@ -72,6 +73,7 @@ class MiniMaxChunkFeedForward(io.ComfyNode):
 
         m = model.clone()
         diffusion_model = m.get_model_object("diffusion_model")
+        reject_keyless_h3_qkv_patch(diffusion_model, "MiniMaxLowVRAMAttention")
 
         blocks = getattr(diffusion_model, "blocks", None)
         if not blocks or not hasattr(blocks[0], "mlp") or not hasattr(blocks[0].mlp, "fc1"):
@@ -87,6 +89,7 @@ class MiniMaxChunkFeedForward(io.ComfyNode):
 
 
 def minimax_attn_lowmem_forward(self, x, rope_freqs=None, transformer_options={}):
+    require_qkv_attention(self, "MiniMaxLowVRAMAttention")
     # Attention.forward restructured to free the normed h right after the qkv GEMM
     # and the fused (S, 3*inner) qkv buffer before out_proj allocates
     if isinstance(x, list):
