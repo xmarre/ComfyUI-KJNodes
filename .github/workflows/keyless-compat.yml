@@ -2,7 +2,6 @@ name: Keyless H3 compatibility
 
 on:
   push:
-    branches: [main]
     paths:
       - "nodes/minimax_nodes.py"
       - "nodes/ltxv_nodes.py"
