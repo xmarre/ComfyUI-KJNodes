@@ -2,7 +2,20 @@ name: Keyless H3 compatibility
 
 on:
   push:
+    branches: [main]
+    paths:
+      - "nodes/minimax_nodes.py"
+      - "nodes/ltxv_nodes.py"
+      - "nodes/minimax_keyless_compat.py"
+      - "tests/test_minimax_keyless_compat.py"
+      - ".github/workflows/keyless-compat.yml"
   pull_request:
+    paths:
+      - "nodes/minimax_nodes.py"
+      - "nodes/ltxv_nodes.py"
+      - "nodes/minimax_keyless_compat.py"
+      - "tests/test_minimax_keyless_compat.py"
+      - ".github/workflows/keyless-compat.yml"
 
 permissions:
   contents: read
