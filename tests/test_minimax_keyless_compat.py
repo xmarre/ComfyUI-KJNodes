@@ -71,6 +71,14 @@ class KeylessGuardTests(unittest.TestCase):
 
 
 class SourceIntegrationTests(unittest.TestCase):
+    def test_ffn_chunk_patch_remains_keyless_model_opaque(self):
+        source = (ROOT / "nodes" / "minimax_nodes.py").read_text(encoding="utf-8")
+        start = source.index("class MiniMaxChunkFeedForward")
+        end = source.index("def minimax_attn_lowmem_forward", start)
+        chunker = source[start:end]
+        self.assertNotIn("reject_keyless_h3_qkv_patch", chunker)
+        self.assertNotIn("qkv_proj", chunker)
+
     def test_low_vram_patch_guards_before_qkv_model_shape_probe(self):
         source = (ROOT / "nodes" / "minimax_nodes.py").read_text(encoding="utf-8")
         execute = source.index("class MiniMaxLowVRAMAttention")
